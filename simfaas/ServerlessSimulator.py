@@ -38,9 +38,8 @@ class ServerlessSimulator:
     """
     def __init__(self, arrival_process=None, warm_service_process=None, 
             cold_service_process=None, expiration_threshold=600, max_time=24*60*60,
-            maximum_concurrency=1000, **kwargs):
+            maximum_concurrency=1000, azure_trace=None, **kwargs):
         super().__init__()
-        
         # setup arrival process
         self.arrival_process = arrival_process
         # if the user wants a exponentially distributed arrival process
@@ -75,9 +74,25 @@ class ServerlessSimulator:
         self.expiration_threshold = expiration_threshold
         self.max_time = max_time
         self.maximum_concurrency = maximum_concurrency
-
+        self.azure_trace = []
+        if (azure_trace is not None):
+          with open(azure_trace) as f:
+            lines = f.readlines()
+            for line in lines:
+              tempLine = line.split(',')
+              inter_arrival = 0
+              for i in range(4, len(tempLine)):
+                if (int(tempLine[i]) == 1):
+                  self.azure_trace.append(inter_arrival)
+                  inter_arrival = 0
+                else:
+                  inter_arrival = inter_arrival + 1
+              break
+            #print('inter_arrivals', self.azure_trace)
         # reset trace values
         self.reset_trace()
+
+    
 
     def reset_trace(self):
         """resets all the historical data to prepare the class for a new simulation
@@ -628,6 +643,106 @@ class ServerlessSimulator:
             if (next_arrival - t) < server_next_transitions.min():
                 t = next_arrival
                 next_arrival = t + self.req()
+
+                # if warm start
+                if self.is_warm_available(t):
+                    self.warm_start_arrival(t)
+                # if cold start
+                else:
+                    self.cold_start_arrival(t)
+                continue
+
+            # if next transition is a state change in one of servers
+            else:
+                # find the server that needs transition
+                idx = server_next_transitions.argmin()
+                t = t + server_next_transitions[idx]
+                new_state = self.servers[idx].make_transition()
+                # delete instance if it was just terminated
+                if new_state == 'TERM':
+                    self.prev_servers.append(self.servers[idx])
+                    self.idle_count -= 1
+                    self.server_count -= 1
+                    del self.servers[idx]
+                    if debug_print:
+                        print(f"Termination for: # {idx}")
+                
+                # if request has done processing (exit event)
+                elif new_state == 'IDLE':
+                    # transition from running to idle
+                    self.running_count -= 1
+                    self.idle_count += 1
+                else:
+                    # force this only if we are running current class, not child classes
+                    if self.__class__ == ServerlessSimulator:
+                        raise Exception(f"Unknown transition in states: {new_state}")
+
+        # after the trace loop, append the last time recorded
+        self.hist_times.append(t)
+        self.calculate_time_lengths()
+        if progress:
+            pbar.update(int(self.max_time) - pbar_t_update)
+            pbar.close()
+        
+
+    def generate_trace_azure(self, debug_print=False, progress=False):
+        """Generate a sample trace.
+
+        Parameters
+        ----------
+        debug_print : bool, optional
+            If True, will print each transition occuring during the simulation, by default False
+        progress : bool, optional
+            Whether or not the progress should be outputted using the `tqdm` library, by default False
+
+        Raises
+        ------
+        Exception
+            Raises if FunctionInstance enters an unknown state (other than `IDLE` for idle or `TERM` for terminated) after making an internal transition
+        """
+        
+        pbar = None
+        if progress:
+            pbar = tqdm(total=int(self.max_time))
+
+        t = 0
+        pbar_t_update = 0
+        pbar_interval = int(self.max_time / 100)
+        next_arrival = t + self.azure_trace[0]
+        self.azure_trace.pop(0)
+        while len(self.azure_trace)>0:
+            if progress:
+                if int(t - pbar_t_update) > pbar_interval:
+                    pbar.update(int(t) - pbar_t_update)
+                    pbar_t_update = int(t)
+            self.hist_times.append(t)
+            self.update_hist_arrays(t)
+            if debug_print:
+                print()
+                print(f"Time: {t:.2f} \t NextArrival: {next_arrival:.2f}")
+                print(self)
+                # print state of all servers
+                [print(s) for s in self.servers]
+
+            # if there are no servers, next transition is arrival
+            if self.has_server() == False:
+                t = next_arrival
+                next_arrival = t + self.azure_trace[0]
+                self.azure_trace.pop(0)
+                #next_arrival = t + self.req()
+                # no servers, so cold start
+                self.cold_start_arrival(t)
+                continue
+
+            # if there are servers, next transition is the soonest one
+            server_next_transitions = np.array([s.get_next_transition_time(t) for s in self.servers])
+
+            # if next transition is arrival
+            if (next_arrival - t) < server_next_transitions.min():
+                t = next_arrival
+                next_arrival = t + self.azure_trace[0]
+                self.azure_trace.pop(0)
+                #next_arrival = t + self.req()
 
                 # if warm start
                 if self.is_warm_available(t):
