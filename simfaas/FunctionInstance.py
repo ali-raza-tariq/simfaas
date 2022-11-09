@@ -41,7 +41,8 @@ class FunctionInstance:
         t : float
             Current time in simulation
         """
-        self.next_departure = t + self.cold_service_process.generate_trace()
+        #self.next_departure = t + self.cold_service_process.generate_trace()
+        self.next_departure = t + self.cold_service_process
 
     def __str__(self):
         return f"State: {self.state} \t Departure: {self.next_departure:8.2f} \t Termination: {self.next_termination:8.2f}"
@@ -100,7 +101,8 @@ class FunctionInstance:
         elif self.state == 'IDLE':
             self.state = 'WARM'
             self.is_busy = True
-            self.next_departure = t + self.warm_service_process.generate_trace()
+            #self.next_departure = t + self.warm_service_process.generate_trace()
+            self.next_departure = t + self.warm_service_process
             self.update_next_termination()
 
     def is_idle(self):
